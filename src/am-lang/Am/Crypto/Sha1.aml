@@ -1,0 +1,24 @@
+
+namespace Am.Crypto
+{
+    // SHA-1 hash primitive — wraps the system OpenSSL `SHA1` (or AmiSSL on
+    // amigaos). Returns a fresh 20-byte UByte[] digest.
+    //
+    // SHA-1 is broken for collision resistance and should not be used for
+    // new password storage or signatures. It is still required by legacy
+    // wire protocols (mysql_native_password, Git object IDs, etc.) — that
+    // is the use case this primitive targets.
+    //
+    // For libc-derived platforms (linux, macos, morphos-ppc, etc.) the impl
+    // lives in `src/native-c/libc/` and uses the system OpenSSL libcrypto
+    // via `-lcrypto` — the ppc-morphos cross-compiler ships upstream
+    // OpenSSL 3.x in its sysroot, so no special handling is needed.
+    // AmigaOS m68k has its own file under `src/native-c/amigaos/` that uses AmiSSL
+    #implementationPlatforms "libc", "amigaos"
+    native class Sha1
+    {
+        import Am.Lang
+
+        static native fun digest(input: UByte[]): UByte[]
+    }
+}
