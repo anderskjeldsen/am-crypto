@@ -13,7 +13,7 @@
 // strong-symbol globals (defining them per-file would multiply-define
 // AmiSSLBase / SocketBase / etc. at link time).
 
-#include <amigaos/amissl_init.h>
+#include <amigaos/am_crypto_amissl_init.h>
 #include <openssl/sha.h>
 
 function_result Am_Crypto_CryptoPrivate_f_openSslInitialized_0(void);
