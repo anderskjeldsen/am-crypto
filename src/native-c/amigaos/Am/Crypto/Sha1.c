@@ -70,6 +70,15 @@ function_result Am_Crypto_Sha1_digest_0(aobject * var_input)
         }
     }
 
+    // Per-task AmiSSL bring-up. amisslauto handled main task at
+    // constructor time; worker tasks need their own InitAmiSSL pair
+    // before any AmiSSL/OpenSSL call. Idempotent — returns 1 fast on
+    // an already-brought-up task, and on non-AmLang tasks.
+    if (!am_crypto_amissl_ensure_initialised_for_current_task()) {
+        __throw_simple_exception("Failed per-task AmiSSL init", "in Am_Crypto_Sha1_digest_0", &__result);
+        goto __exit;
+    }
+
     a_holder = (array_holder *) &var_input[1];
     input_len = a_holder->size;
     input_data = (unsigned char *) a_holder->array_data;
@@ -88,5 +97,16 @@ function_result Am_Crypto_Sha1_digest_0(aobject * var_input)
 
 __exit: ;
     if (var_input != NULL) { __decrease_reference_count(var_input); }
+    return __result;
+}
+
+// Thread finalizer registered by Sha1.nativeInit (the AmLang lambda
+// added in Sha1.aml). Runs on the worker task as it shuts down, so
+// FindTask(NULL) inside am_crypto_amissl_close_for_current_task
+// resolves to the task whose AmiSSL state we're tearing down.
+function_result Am_Crypto_Sha1_closeAmiSSLForThread_0(void)
+{
+    function_result __result = { .has_return_value = false };
+    am_crypto_amissl_close_for_current_task();
     return __result;
 }

@@ -18,7 +18,36 @@ namespace Am.Crypto
     native class Sha1
     {
         import Am.Lang
+        import Am.Threading
 
         static native fun digest(input: UByte[]): UByte[]
+
+        // Per-thread AmiSSL bookkeeping hook. Called by the amigaos
+        // native side the first time the current AmigaOS task brings up
+        // AmiSSL inside `digest(...)`. We register a Thread finalizer
+        // so that when the AmLang worker thread ends, the matching
+        // CleanupAmiSSL + CloseLibrary runs from inside the same task —
+        // that's what AmiSSL tracks via FindTask(NULL). Mirror of
+        // Am.Net.Socket.nativeInit / Am.Net.Ssl.SslSocketStream.nativeInit.
+        private static fun nativeInit() {
+            "Sha1.nativeInit: enter".println()
+            var t = Thread.getCurrent()
+            if (t != null) {
+                "Sha1.nativeInit: have thread, registering finalizer".println()
+                var fn: () => Bool = () => {
+                    "Sha1.finalizer: lambda invoked".println()
+                    Sha1.closeAmiSSLForThread()
+                    "Sha1.finalizer: closeAmiSSLForThread returned".println()
+                    return true
+                }
+                t.addFinalizer(fn)
+                "Sha1.nativeInit: finalizer registered".println()
+            }
+        }
+
+        // Counterpart of nativeInit's per-task AmiSSL bring-up. The
+        // Thread finalizer fires from inside the worker task, so the
+        // FindTask(NULL) lookup resolves to the task that opened.
+        private static native fun closeAmiSSLForThread()
     }
 }

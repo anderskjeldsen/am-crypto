@@ -57,3 +57,12 @@ __exit: ;
     if (var_input != NULL) { __decrease_reference_count(var_input); }
     return __result;
 }
+
+// No-op on libc backends — there's no per-task AmiSSL state to tear
+// down. The AmLang Sha1.nativeInit lambda still calls this through
+// the Thread finalizer; it just doesn't do anything here.
+function_result Am_Crypto_Sha1_closeAmiSSLForThread_0(void)
+{
+    function_result __result = { .has_return_value = false };
+    return __result;
+}
