@@ -1,0 +1,168 @@
+namespace Sha1ThreadTest {
+
+    // Worker runs SHA-1 on a worker Thread. The amigaos m68k path
+    // exercises the per-task AmiSSL bring-up: when Sha1.digest first
+    // runs on this task, the C side does OpenLibrary(amisslmaster) +
+    // InitAmiSSL, registers an AmLang Thread finalizer, and the
+    // finalizer runs CleanupAmiSSL + CloseLibrary when this thread
+    // exits.
+    class HashWorker(var label: String, var input: String, var iterations: Int) : Runnable {
+        import Am.Lang
+        import Am.Threading
+        import Am.Crypto
+
+        override fun run() {
+            ("[" + this.label + "] starting, will hash " + this.iterations.toString() + " times").println()
+            var i = 0
+            while (i < this.iterations) {
+                var bytes = this.input.toBytes("UTF-8")
+                var digest = Sha1.digest(bytes)
+                ("[" + this.label + "] iter " + i.toString() + ": "
+                    + HashWorker.toHex(digest)).println()
+                i = i + 1
+            }
+            ("[" + this.label + "] done").println()
+        }
+
+        // Lower-case hex encoding. Static helper so each iteration's
+        // print is self-contained.
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + HashWorker.nibble(hi) + HashWorker.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) { return n.toString() }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+
+    // No SHA-1, no AmiSSL touch — just println from inside a worker
+    // task. Used to isolate Thread teardown from per-task AmiSSL
+    // bring-up. Because we never call Sha1.digest on this worker,
+    // Sha1.nativeInit doesn't run and no Thread.addFinalizer happens,
+    // so the worker exits with an empty finalizers list.
+    class PrintWorker(var label: String, var iterations: Int) : Runnable {
+        import Am.Lang
+        import Am.Threading
+
+        override fun run() {
+            ("[" + this.label + "] starting").println()
+
+            // Register a dummy finalizer that JUST prints — no AmiSSL,
+            // no native calls. If we see the "dummy-finalizer fired"
+            // line in the log between [_InitTask] rFunc returned and
+            // [_InitTask] runFinalizers returned, the Thread finalizer
+            // mechanism works as designed and the earlier Sha1
+            // finalizer wiring is fine. If we DON'T see it, the
+            // mechanism itself is broken and what we thought was a
+            // working per-task cleanup never actually ran.
+            var t = Thread.getCurrent()
+            if (t != null) {
+                var fn: () => Bool = () => {
+                    "[dummy-finalizer] fired on worker task".println()
+                    return true
+                }
+                t.addFinalizer(fn)
+                ("[" + this.label + "] dummy finalizer registered").println()
+            } else {
+                ("[" + this.label + "] WARN: Thread.getCurrent() returned null on worker").println()
+            }
+
+            var i = 0
+            while (i < this.iterations) {
+                ("[" + this.label + "] tick " + i.toString()).println()
+                i = i + 1
+            }
+            ("[" + this.label + "] done").println()
+        }
+    }
+
+    // Drives the test:
+    //   1. Hash a known input on the main task — proves AmiSSL is up
+    //      via amisslauto's constructor.
+    //   2. Start a worker Thread that hashes a different input several
+    //      times — proves per-task AmiSSL bring-up works (OpenLibrary
+    //      amisslmaster + InitAmiSSL from the worker).
+    //   3. Join the worker — its Thread finalizer should run
+    //      CleanupAmiSSL + CloseLibrary on the worker task as it exits.
+    //   4. Hash again on main, AFTER the worker tore down its state,
+    //      to prove main's AmiSSLBase wasn't disturbed.
+    //
+    // Expected hashes (FIPS 180 / RFC 3174 test vectors):
+    //   "abc"    -> a9993e364706816aba3e25717850c26c9cd0d89d
+    //   "AmLang" -> (whatever; consistent across all calls)
+    //   "fox..." -> 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+    class Program {
+        import Am.Lang
+        import Am.Threading
+        import Am.Crypto
+
+        static fun main() {
+            "=== Sha1 Thread Test (NO PER-TASK AMISSL) ===".println()
+
+            "--- Main task SHA-1 ---".println()
+            Program.hashAndPrint("main", "abc")
+            Program.hashAndPrint("main", "AmLang")
+
+            "".println()
+            "--- Worker task SHA-1 (no per-task InitAmiSSL) ---".println()
+            // SHA-1 on a worker, but the C side's
+            // ensure_initialised_for_current_task is currently a stub
+            // — the worker uses the shared AmiSSLBase directly with no
+            // InitAmiSSL of its own. Hypothesis: the docs' per-task
+            // contract is stricter than what current AmiSSL actually
+            // needs, and the destructor Guru goes away when we don't
+            // perturb the per-task list.
+            var w = new HashWorker("worker", "The quick brown fox jumps over the lazy dog", 3)
+            var r = w as Runnable
+            var t = new Thread(r)
+            t.name = "sha1-worker"
+            "main: starting worker".println()
+            t.start()
+            "main: joining worker".println()
+            t.join()
+            "main: worker joined".println()
+
+            "".println()
+            "--- Main task SHA-1 (post-worker) ---".println()
+            Program.hashAndPrint("main", "abc")
+
+            "".println()
+            "=== Done ===".println()
+            "main: returning to runtime".println()
+        }
+
+        // Fires from generated startup.c AFTER main returns and BEFORE
+        // __dereference_static_properties / GC sweep / per-class
+        // shutdowns. Lets us pinpoint whether the crash happens during
+        // the AmLang teardown phase or later (amisslauto destructor).
+        #runOnExit
+        static fun teardownTrace() {
+            "runOnExit: AmLang teardown beginning".println()
+        }
+
+        // Hash `input` as UTF-8 and print "<tag> sha1(<input>) = <hex>".
+        // Same digest body as sha1-test's example, lifted into a
+        // labelled wrapper so main vs worker output is distinguishable.
+        static fun hashAndPrint(tag: String, input: String) {
+            var bytes = input.toBytes("UTF-8")
+            var digest = Sha1.digest(bytes)
+            ("[" + tag + "] sha1(\"" + input + "\") = "
+                + HashWorker.toHex(digest)).println()
+        }
+    }
+}

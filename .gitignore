@@ -6,3 +6,4 @@ c-libs/AmiSSL*
 c-libs/openssl
 amlc.jar
 examples/*/builds
+examples/**/amiberry
