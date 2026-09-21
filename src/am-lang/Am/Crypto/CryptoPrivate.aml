@@ -1,5 +1,7 @@
 namespace Am.Crypto
 {
+    // Its accessors are called from native C (Sha1.c and friends), invisible to the tree-shaker.
+    #compileAlways
     class CryptoPrivate
     {
         import Am.Lang

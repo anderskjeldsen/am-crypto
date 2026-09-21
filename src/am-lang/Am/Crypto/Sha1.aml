@@ -22,6 +22,46 @@ namespace Am.Crypto
 
         static native fun digest(input: UByte[]): UByte[]
 
+        // ---- streaming interface --------------------------------------
+        // Hash data in pieces without assembling one contiguous buffer:
+        //
+        //   var h = new Sha1()
+        //   h.update(header)
+        //   h.update(content)
+        //   var sha = h.finish()      // 20 bytes; h is spent afterwards
+        //
+        // Produces exactly the same digest as Sha1.digest over the
+        // concatenation of every update. Exists for callers like am-git's
+        // object hasher, which otherwise has to allocate header+content
+        // into a fresh contiguous array PER OBJECT just to hash it — on a
+        // clone that re-copied the entire inflated history once over.
+        //
+        // A hasher is single-use: update or finish after finish() throws.
+
+        fun update(input: UByte[]) {
+            this.updateRange(input, 0UI, input.length())
+        }
+
+        // Hash `length` bytes of `input` starting at `offset` — saves the
+        // subArray copy when the interesting bytes sit inside a larger
+        // buffer.
+        fun updateRange(input: UByte[], offset: UInt, length: UInt) {
+            if (length == 0UI) {
+                return
+            }
+            var len = input.length()
+            if (length > len || offset > len - length) {
+                throw new IndexOutOfBoundsException((offset + length).toInt(), len)
+            }
+            this.updateNative(input, offset, length)
+        }
+
+        private native fun updateNative(input: UByte[], offset: UInt, length: UInt)
+
+        // Finalise and return the 20-byte digest. The hasher cannot be
+        // reused afterwards.
+        native fun finish(): UByte[]
+
         // Per-thread AmiSSL bookkeeping hook. Called by the amigaos
         // native side the first time the current AmigaOS task brings up
         // AmiSSL inside `digest(...)`. We register a Thread finalizer
