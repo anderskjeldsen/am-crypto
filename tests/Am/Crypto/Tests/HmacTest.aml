@@ -1,0 +1,239 @@
+namespace Am.Crypto.Tests {
+
+    // Tests for `Am.Crypto.Hmac`. The HMAC-SHA-256 expectations are the
+    // RFC 4231 test vectors and the HMAC-SHA-1 ones are RFC 2202's — the
+    // published cases, chosen because between them they cover the three
+    // key lengths that distinguish a correct HMAC from a plausible one:
+    // shorter than the block size, exactly the digest length, and LONGER
+    // than the block size (which must be hashed down first).
+    //
+    // That last case is the whole reason HMAC is a primitive here rather
+    // than three lines in each caller. A reimplementation that skips the
+    // hash-down step passes every short-key test and then fails the first
+    // time somebody uses a long key.
+    class HmacTest {
+        import Am.Lang
+        import Am.Crypto
+        import Am.Tests
+
+        // ---- HMAC-SHA-256, RFC 4231 -------------------------------------
+
+        // Case 1: 20-byte key of 0x0b, "Hi There".
+        test sha256Rfc4231Case1() {
+            Assert.assertEquals("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+                HmacTest.toHex(Hmac.sha256(HmacTest.repeated(20UI, 11UB),
+                    "Hi There".toBytes("UTF-8"))))
+        }
+
+        // Case 2: a 4-byte key — much shorter than the 64-byte block, so
+        // the zero-padding path.
+        test sha256Rfc4231Case2() {
+            Assert.assertEquals("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+                HmacTest.toHex(Hmac.sha256("Jefe".toBytes("UTF-8"),
+                    "what do ya want for nothing?".toBytes("UTF-8"))))
+        }
+
+        // Case 3: 20 bytes of 0xaa over 50 bytes of 0xdd.
+        test sha256Rfc4231Case3() {
+            Assert.assertEquals("773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+                HmacTest.toHex(Hmac.sha256(HmacTest.repeated(20UI, 170UB),
+                    HmacTest.repeated(50UI, 221UB))))
+        }
+
+        // Case 4: a 25-byte key of 0x01..0x19 — not a repeated byte, so a
+        // binding that passed the wrong length would still differ here.
+        test sha256Rfc4231Case4() {
+            Assert.assertEquals("82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+                HmacTest.toHex(Hmac.sha256(HmacTest.ramp(25UI),
+                    HmacTest.repeated(50UI, 205UB))))
+        }
+
+        // Case 6: a 131-byte key — longer than SHA-256's 64-byte block, so
+        // the key is SHA-256'd down to 32 bytes before use. The case the
+        // hand-rolled implementations get wrong.
+        test sha256Rfc4231Case6LongKey() {
+            Assert.assertEquals("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+                HmacTest.toHex(Hmac.sha256(HmacTest.repeated(131UI, 170UB),
+                    "Test Using Larger Than Block-Size Key - Hash Key First".toBytes("UTF-8"))))
+        }
+
+        // Case 7: the 131-byte key again, over a message longer than a
+        // block as well.
+        test sha256Rfc4231Case7LongKeyAndMessage() {
+            Assert.assertEquals("9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+                HmacTest.toHex(Hmac.sha256(HmacTest.repeated(131UI, 170UB),
+                    ("This is a test using a larger than block-size key and a larger "
+                        + "than block-size data. The key needs to be hashed before being "
+                        + "used by the HMAC algorithm.").toBytes("UTF-8"))))
+        }
+
+        // ---- HMAC-SHA-1, RFC 2202 ---------------------------------------
+
+        test sha1Rfc2202Case1() {
+            Assert.assertEquals("b617318655057264e28bc0b6fb378c8ef146be00",
+                HmacTest.toHex(Hmac.sha1(HmacTest.repeated(20UI, 11UB),
+                    "Hi There".toBytes("UTF-8"))))
+        }
+
+        test sha1Rfc2202Case2() {
+            Assert.assertEquals("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+                HmacTest.toHex(Hmac.sha1("Jefe".toBytes("UTF-8"),
+                    "what do ya want for nothing?".toBytes("UTF-8"))))
+        }
+
+        // The 80-byte long-key case — over SHA-1's 64-byte block.
+        test sha1Rfc2202Case6LongKey() {
+            Assert.assertEquals("aa4ae5e15272d00e95705637ce8a3b55ed402112",
+                HmacTest.toHex(Hmac.sha1(HmacTest.repeated(80UI, 170UB),
+                    "Test Using Larger Than Block-Size Key - Hash Key First".toBytes("UTF-8"))))
+        }
+
+        // ---- shape ------------------------------------------------------
+
+        test sha256IsAlways32BytesAndSha1Is20() {
+            var key = "k".toBytes("UTF-8")
+            Assert.assertTrue(Hmac.sha256(key, "".toBytes("UTF-8")).length() == 32UI)
+            Assert.assertTrue(Hmac.sha256(key, "a long message here".toBytes("UTF-8")).length() == 32UI)
+            Assert.assertTrue(Hmac.sha1(key, "".toBytes("UTF-8")).length() == 20UI)
+        }
+
+        // An empty key is legal — zero-padded to the block size like any
+        // short key — and must not be a crash or a NULL.
+        test emptyKeyIsAcceptedNotRejected() {
+            var mac = Hmac.sha256(new UByte[0UI], "message".toBytes("UTF-8"))
+            Assert.assertTrue(mac.length() == 32UI)
+            // And it is the HMAC of an all-zero key, so it differs from the
+            // plain digest of the message — a binding that quietly fell
+            // back to "just hash it" would be caught here.
+            Assert.assertTrue(HmacTest.toHex(mac)
+                != HmacTest.toHex(Sha256.digest("message".toBytes("UTF-8"))))
+        }
+
+        test emptyMessageIsAccepted() {
+            Assert.assertTrue(Hmac.sha256("key".toBytes("UTF-8"), new UByte[0UI]).length() == 32UI)
+        }
+
+        // The key is not the message: swapping them must change the MAC.
+        // An implementation that concatenated instead of keying would not
+        // notice the difference.
+        test keyAndMessageAreNotInterchangeable() {
+            var a = HmacTest.toHex(Hmac.sha256("alpha".toBytes("UTF-8"), "beta".toBytes("UTF-8")))
+            var b = HmacTest.toHex(Hmac.sha256("beta".toBytes("UTF-8"), "alpha".toBytes("UTF-8")))
+            Assert.assertTrue(a != b)
+        }
+
+        test changingOneKeyByteChangesTheMac() {
+            var a = HmacTest.toHex(Hmac.sha256("secret".toBytes("UTF-8"), "msg".toBytes("UTF-8")))
+            var b = HmacTest.toHex(Hmac.sha256("secrer".toBytes("UTF-8"), "msg".toBytes("UTF-8")))
+            Assert.assertTrue(a != b)
+        }
+
+        test sha256IsNotSha1() {
+            var key = "k".toBytes("UTF-8")
+            var msg = "m".toBytes("UTF-8")
+            Assert.assertTrue(HmacTest.toHex(Hmac.sha256(key, msg))
+                != HmacTest.toHex(Hmac.sha1(key, msg)))
+        }
+
+        // ---- verify -----------------------------------------------------
+
+        test verifyAcceptsAMatch() {
+            var a = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            var b = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            Assert.assertTrue(Hmac.verify(a, b))
+        }
+
+        // The case that matters: a MAC that is right except for its LAST
+        // byte. A comparison that stopped early would still answer false
+        // here — what this pins is that it answers false at all, i.e. that
+        // the constant-time path compares the whole thing rather than
+        // short-circuiting somewhere that happens to return true.
+        test verifyRejectsADifferenceInTheLastByte() {
+            var a = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            var b = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            b[31UI] = (b[31UI].toUInt() ^ 1UI).toUByte()
+            Assert.assertTrue(!Hmac.verify(a, b))
+        }
+
+        test verifyRejectsADifferenceInTheFirstByte() {
+            var a = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            var b = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            b[0UI] = (b[0UI].toUInt() ^ 128UI).toUByte()
+            Assert.assertTrue(!Hmac.verify(a, b))
+        }
+
+        // A prefix of the right value is not the right value — this is the
+        // check that would be missing if the native side were handed two
+        // different lengths and compared only the shorter.
+        test verifyRejectsAPrefix() {
+            var full = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            var truncated = new UByte[16UI]
+            var i: UInt = 0UI
+            while (i < 16UI) {
+                truncated[i] = full[i]
+                i = i + 1UI
+            }
+            Assert.assertTrue(!Hmac.verify(full, truncated))
+            Assert.assertTrue(!Hmac.verify(truncated, full))
+        }
+
+        test verifyTreatsTwoEmptyArraysAsEqual() {
+            Assert.assertTrue(Hmac.verify(new UByte[0UI], new UByte[0UI]))
+        }
+
+        test verifyRejectsEmptyAgainstNonEmpty() {
+            Assert.assertTrue(!Hmac.verify(new UByte[0UI], "x".toBytes("UTF-8")))
+        }
+
+        // ---- helpers ----------------------------------------------------
+
+        // `count` copies of `value`. The RFC vectors are specified this
+        // way, and the pinned am-lang-core under dependencies/ predates
+        // Array fills, so this is a loop.
+        static fun repeated(count: UInt, value: UByte): UByte[] {
+            var out = new UByte[count]
+            var i: UInt = 0UI
+            while (i < count) {
+                out[i] = value
+                i = i + 1UI
+            }
+            return out
+        }
+
+        // Bytes 0x01, 0x02, ... 0x19 — RFC 4231's case-4 key.
+        static fun ramp(count: UInt): UByte[] {
+            var out = new UByte[count]
+            var i: UInt = 0UI
+            while (i < count) {
+                out[i] = (i + 1UI).toUByte()
+                i = i + 1UI
+            }
+            return out
+        }
+
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + HmacTest.nibble(hi) + HmacTest.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) {
+                return n.toString()
+            }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+}

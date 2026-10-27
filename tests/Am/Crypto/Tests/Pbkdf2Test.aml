@@ -1,0 +1,310 @@
+namespace Am.Crypto.Tests {
+
+    // Tests for `Am.Crypto.Pbkdf2`. The HMAC-SHA-1 expectations are the
+    // RFC 6070 test vectors; the HMAC-SHA-256 ones are the widely
+    // published set over the same inputs, cross-checked against a second
+    // implementation before being written down.
+    //
+    // The last test in this file is the one that earns the other two
+    // files their keep: the complete RFC 7677 SCRAM-SHA-256 exchange,
+    // computed from Pbkdf2 + Hmac + Sha256 together and compared against
+    // the client proof and server signature the RFC prints. Each
+    // primitive can be individually correct and still be wired up wrong;
+    // that test is the only one here that would notice.
+    class Pbkdf2Test {
+        import Am.Lang
+        import Am.Crypto
+        import Am.Tests
+
+        // ---- HMAC-SHA-1, RFC 6070 ---------------------------------------
+
+        test sha1Rfc6070OneIteration() {
+            Assert.assertEquals("0c60c80f961f0e71f3a9b524af6012062fe037a6",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha1("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 1, 20)))
+        }
+
+        // Two iterations rather than one: the first round is just HMAC, so
+        // a loop that never ran would pass the case above and fail here.
+        test sha1Rfc6070TwoIterations() {
+            Assert.assertEquals("ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha1("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 2, 20)))
+        }
+
+        test sha1Rfc6070FourThousandIterations() {
+            Assert.assertEquals("4b007901b765489abead49d926f721d065a429c1",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha1("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 4096, 20)))
+        }
+
+        // 25 bytes from SHA-1's 20-byte function, so the output spans two
+        // blocks and the second one has to be asked for with a different
+        // block index. A derivation that ignored the index would produce
+        // the first 20 bytes correctly and then repeat them.
+        test sha1Rfc6070LongerThanOneBlock() {
+            Assert.assertEquals("3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha1("passwordPASSWORDpassword".toBytes("UTF-8"),
+                    "saltSALTsaltSALTsaltSALTsaltSALTsalt".toBytes("UTF-8"), 4096, 25)))
+        }
+
+        // RFC 6070's embedded-NUL case: password "pass\0word", salt
+        // "sa\0lt". Both inputs are byte arrays here precisely so that a
+        // NUL is data rather than a terminator — if the native side passed
+        // them to anything that measured with strlen, this would come back
+        // as the digest of "pass" under "sa".
+        test sha1Rfc6070EmbeddedNulIsData() {
+            Assert.assertEquals("56fa6aa75548099dcc37d7f03425e0c3",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha1(Pbkdf2Test.fromHex("7061737300776f7264"),
+                    Pbkdf2Test.fromHex("7361006c74"), 4096, 16)))
+        }
+
+        // ---- HMAC-SHA-256 ------------------------------------------------
+
+        test sha256OneIteration() {
+            Assert.assertEquals("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha256("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 1, 32)))
+        }
+
+        test sha256TwoIterations() {
+            Assert.assertEquals("ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha256("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 2, 32)))
+        }
+
+        test sha256FourThousandIterations() {
+            Assert.assertEquals("c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha256("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 4096, 32)))
+        }
+
+        // 40 bytes from SHA-256's 32-byte function — the two-block case
+        // again, for the other digest.
+        test sha256LongerThanOneBlock() {
+            Assert.assertEquals("348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9",
+                Pbkdf2Test.toHex(Pbkdf2.hmacSha256("passwordPASSWORDpassword".toBytes("UTF-8"),
+                    "saltSALTsaltSALTsaltSALTsaltSALTsalt".toBytes("UTF-8"), 4096, 40)))
+        }
+
+        // ---- shape and validation ----------------------------------------
+
+        // The requested length is produced exactly, including lengths that
+        // are not a multiple of the digest size.
+        test derivesExactlyTheRequestedLength() {
+            var pw = "password".toBytes("UTF-8")
+            var salt = "salt".toBytes("UTF-8")
+            Assert.assertTrue(Pbkdf2.hmacSha256(pw, salt, 1, 1).length() == 1UI)
+            Assert.assertTrue(Pbkdf2.hmacSha256(pw, salt, 1, 31).length() == 31UI)
+            Assert.assertTrue(Pbkdf2.hmacSha256(pw, salt, 1, 33).length() == 33UI)
+            Assert.assertTrue(Pbkdf2.hmacSha1(pw, salt, 1, 100).length() == 100UI)
+        }
+
+        // A shorter request is a PREFIX of a longer one — that is how
+        // PBKDF2 is defined, and it is worth pinning because it means a
+        // caller cannot gain anything by asking for more bytes than it
+        // needs and slicing.
+        test aShorterRequestIsAPrefixOfALongerOne() {
+            var pw = "password".toBytes("UTF-8")
+            var salt = "salt".toBytes("UTF-8")
+            var wide = Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, salt, 2, 64))
+            var shortened = Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, salt, 2, 32))
+            Assert.assertEquals(shortened, wide.substring(0UI, 64UI))
+        }
+
+        // The salt is what makes two identical passwords derive to
+        // different keys — the entire reason it exists.
+        test theSaltChangesTheResult() {
+            var pw = "password".toBytes("UTF-8")
+            var a = Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, "salt".toBytes("UTF-8"), 2, 32))
+            var b = Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, "pepper".toBytes("UTF-8"), 2, 32))
+            Assert.assertTrue(a != b)
+        }
+
+        test moreIterationsChangeTheResult() {
+            var pw = "password".toBytes("UTF-8")
+            var salt = "salt".toBytes("UTF-8")
+            Assert.assertTrue(Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, salt, 2, 32))
+                != Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, salt, 3, 32)))
+        }
+
+        test sha256IsNotSha1() {
+            var pw = "password".toBytes("UTF-8")
+            var salt = "salt".toBytes("UTF-8")
+            Assert.assertTrue(Pbkdf2Test.toHex(Pbkdf2.hmacSha256(pw, salt, 2, 20))
+                != Pbkdf2Test.toHex(Pbkdf2.hmacSha1(pw, salt, 2, 20)))
+        }
+
+        // An empty salt and an empty password are both legal inputs. Not
+        // good practice, but a derivation that crashed on them would turn
+        // a configuration mistake into a dead server.
+        test emptyInputsAreAccepted() {
+            Assert.assertTrue(Pbkdf2.hmacSha256(new UByte[0UI], new UByte[0UI], 1, 32).length() == 32UI)
+        }
+
+        test zeroIterationsThrows() {
+            Assert.assertTrue(Pbkdf2Test.throwsFor(0, 32))
+            Assert.assertTrue(Pbkdf2Test.throwsFor(0 - 5, 32))
+        }
+
+        // A length of zero or less is caught in AmLang rather than reaching
+        // the native side, where a negative int would be read as an
+        // enormous unsigned length.
+        test badLengthThrows() {
+            Assert.assertTrue(Pbkdf2Test.throwsFor(1, 0))
+            Assert.assertTrue(Pbkdf2Test.throwsFor(1, 0 - 1))
+            Assert.assertTrue(Pbkdf2Test.throwsFor(1, Pbkdf2.MAX_LENGTH + 1))
+            // And the boundary itself is allowed.
+            Assert.assertTrue(!Pbkdf2Test.throwsFor(1, Pbkdf2.MAX_LENGTH))
+        }
+
+        // ---- the PostgreSQL `scram-sha-256` shape -------------------------
+
+        /**
+         * The whole of RFC 7677's worked example, computed from these
+         * three primitives.
+         *
+         *     SaltedPassword  = PBKDF2(password, salt, i, 32)
+         *     ClientKey       = HMAC(SaltedPassword, "Client Key")
+         *     StoredKey       = SHA256(ClientKey)
+         *     ClientSignature = HMAC(StoredKey, AuthMessage)
+         *     ClientProof     = ClientKey XOR ClientSignature
+         *     ServerKey       = HMAC(SaltedPassword, "Server Key")
+         *     ServerSignature = HMAC(ServerKey, AuthMessage)
+         *
+         * This is here, rather than only in whatever plugin eventually
+         * speaks SCRAM, because every mistake in that chain produces the
+         * same symptom — the server says the password is wrong — and
+         * because the chain is where the mistakes are. Which value is the
+         * HMAC key and which is the message changes four times; the
+         * STORED key is hashed but the CLIENT key is not; and the proof is
+         * an XOR, not a concatenation or another HMAC.
+         *
+         * The expected values are the RFC's own (its `p=` and `v=` fields,
+         * printed there in base64, written here as hex because the pinned
+         * am-lang-core's Base64 has no decode).
+         */
+        test scramSha256Rfc7677Exchange() {
+            var password = "pencil".toBytes("UTF-8")
+            // The RFC's salt, s=W22ZaJ0SNY7soEsUEjb6gQ== — 16 raw bytes,
+            // not the text of the base64.
+            var salt = Pbkdf2Test.fromHex("5b6d99689d12358eeca04b141236fa81")
+
+            var saltedPassword = Pbkdf2.hmacSha256(password, salt, 4096, 32)
+            Assert.assertEquals("c4a49510323ab4f952cac1fa99441939e78ea74d6be81ddf7096e87513dc615d",
+                Pbkdf2Test.toHex(saltedPassword))
+
+            var clientKey = Hmac.sha256(saltedPassword, "Client Key".toBytes("UTF-8"))
+            Assert.assertEquals("a60fc923d67e8644a92d16b96eda5ef4656b0c725c484374be25535576996e8b",
+                Pbkdf2Test.toHex(clientKey))
+
+            var storedKey = Sha256.digest(clientKey)
+            Assert.assertEquals("586e5df283e6dceb5c3e791d8b8528ec191e664045ce971792e2e6b5bb13e2a6",
+                Pbkdf2Test.toHex(storedKey))
+
+            // client-first-bare , server-first , client-final-without-proof
+            var authMessage = ("n=user,r=rOprNGfwEbeRWgbNEkqO"
+                + ",r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF" + "$" + "k0"
+                + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
+                + ",c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF" + "$" + "k0").toBytes("UTF-8")
+
+            var clientSignature = Hmac.sha256(storedKey, authMessage)
+            Assert.assertEquals("d27312467c28a40a8a7f05c73c0de33eb3cbfb4a83783b58144cf19ac6be1bdf",
+                Pbkdf2Test.toHex(clientSignature))
+
+            // ClientProof = ClientKey XOR ClientSignature. The RFC prints
+            // it as p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=
+            var proof = new UByte[32UI]
+            var i: UInt = 0UI
+            while (i < 32UI) {
+                proof[i] = (clientKey[i].toUInt() ^ clientSignature[i].toUInt()).toUByte()
+                i = i + 1UI
+            }
+            Assert.assertEquals("747cdb65aa56224e2352137e52d7bdcad6a0f738df30782caa69a2cfb0277554",
+                Pbkdf2Test.toHex(proof))
+
+            // The server's half, which a client must check rather than
+            // trust: v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=
+            var serverKey = Hmac.sha256(saltedPassword, "Server Key".toBytes("UTF-8"))
+            var serverSignature = Hmac.sha256(serverKey, authMessage)
+            Assert.assertEquals("eabae24d1062db75a9451ff0b6ea7e98c8546549ff741e672d3251b2397de46e",
+                Pbkdf2Test.toHex(serverSignature))
+
+            // And the comparison a client makes is the constant-time one.
+            Assert.assertTrue(Hmac.verify(serverSignature,
+                Hmac.sha256(serverKey, authMessage)))
+        }
+
+        // ---- helpers ------------------------------------------------------
+
+        // True if the call threw. The inputs vary only in the two numbers
+        // the validation looks at, so the password and salt are fixed.
+        static fun throwsFor(iterations: Int, length: Int): Bool {
+            try {
+                Pbkdf2.hmacSha256("password".toBytes("UTF-8"), "salt".toBytes("UTF-8"),
+                    iterations, length)
+            } catch (ex: Exception) {
+                return true
+            }
+            return false
+        }
+
+        static fun fromHex(hex: String): UByte[] {
+            var count = hex.length() / 2
+            var out = new UByte[count.toUInt()]
+            var i: Int = 0
+            while (i < count) {
+                var hi = Pbkdf2Test.digit(hex.substring((i * 2).toUInt(), 1UI))
+                var lo = Pbkdf2Test.digit(hex.substring((i * 2 + 1).toUInt(), 1UI))
+                out[i.toUInt()] = ((hi * 16 + lo).toUInt()).toUByte()
+                i = i + 1
+            }
+            return out
+        }
+
+        static fun digit(c: String): Int {
+            if (c == "0") { return 0 }
+            if (c == "1") { return 1 }
+            if (c == "2") { return 2 }
+            if (c == "3") { return 3 }
+            if (c == "4") { return 4 }
+            if (c == "5") { return 5 }
+            if (c == "6") { return 6 }
+            if (c == "7") { return 7 }
+            if (c == "8") { return 8 }
+            if (c == "9") { return 9 }
+            if (c == "a") { return 10 }
+            if (c == "b") { return 11 }
+            if (c == "c") { return 12 }
+            if (c == "d") { return 13 }
+            if (c == "e") { return 14 }
+            if (c == "f") { return 15 }
+            throw new Exception("not a hex digit: " + c)
+        }
+
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + Pbkdf2Test.nibble(hi) + Pbkdf2Test.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) {
+                return n.toString()
+            }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+}

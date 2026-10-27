@@ -1,0 +1,76 @@
+namespace Am.Crypto
+{
+    // SHA-256 hash primitive — wraps the system OpenSSL `SHA256` (or AmiSSL
+    // on amigaos). Returns a fresh 32-byte UByte[] digest.
+    //
+    // Unlike [[Sha1]] and [[Md5]] next door, this one is not here under
+    // protest: SHA-256 is the digest to reach for when the choice is yours.
+    // The two older primitives exist because wire protocols name them and a
+    // client has no say; this one exists because modern protocols name it
+    // AND because it is the right default — password derivation through
+    // [[Pbkdf2]], message authentication through [[Hmac]], content
+    // addressing where collisions must be hard rather than merely unlikely.
+    //
+    // The protocols that drove it in: PostgreSQL's `scram-sha-256` (the
+    // default authentication method since PG 14, where our `md5` support is
+    // the legacy path) and MySQL 8's `caching_sha2_password` (its default
+    // since 8.0, where `mysql_native_password` is the legacy path). Both
+    // need SHA-256, HMAC-SHA-256 and PBKDF2 — which is why all three landed
+    // together rather than one per protocol.
+    //
+    // For libc-derived platforms (linux, macos, morphos-ppc, etc.) the impl
+    // lives in `src/native-c/libc/` and uses the system OpenSSL libcrypto
+    // via `-lcrypto`. AmigaOS m68k has its own file under
+    // `src/native-c/amigaos/` that uses AmiSSL, sharing the library
+    // bring-up in am_crypto_amissl_init.c with Sha1 and Md5.
+    //
+    // No SHA-224/384/512 here yet. Adding one is a copy of this file with
+    // three constants changed, and nothing has asked for it — a digest
+    // nobody calls is a digest nobody has tested.
+    #implementationPlatforms "libc", "amigaos"
+    native class Sha256
+    {
+        import Am.Lang
+
+        static native fun digest(input: UByte[]): UByte[]
+
+        // ---- streaming interface --------------------------------------
+        // Hash data in pieces without assembling one contiguous buffer:
+        //
+        //   var h = new Sha256()
+        //   h.update(first)
+        //   h.update(second)
+        //   var sum = h.finish()      // 32 bytes; h is spent afterwards
+        //
+        // Produces exactly the same digest as Sha256.digest over the
+        // concatenation of every update. The shape is Sha1's and Md5's,
+        // deliberately: a caller swapping one digest for another should
+        // only have to change the type name.
+        //
+        // A hasher is single-use: update or finish after finish() throws.
+
+        fun update(input: UByte[]) {
+            this.updateRange(input, 0UI, input.length())
+        }
+
+        // Hash `length` bytes of `input` starting at `offset` — saves the
+        // subArray copy when the interesting bytes sit inside a larger
+        // buffer.
+        fun updateRange(input: UByte[], offset: UInt, length: UInt) {
+            if (length == 0UI) {
+                return
+            }
+            var len = input.length()
+            if (length > len || offset > len - length) {
+                throw new IndexOutOfBoundsException((offset + length).toInt(), len)
+            }
+            this.updateNative(input, offset, length)
+        }
+
+        private native fun updateNative(input: UByte[], offset: UInt, length: UInt)
+
+        // Finalise and return the 32-byte digest. The hasher cannot be
+        // reused afterwards.
+        native fun finish(): UByte[]
+    }
+}

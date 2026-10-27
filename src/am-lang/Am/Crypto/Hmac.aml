@@ -1,0 +1,74 @@
+namespace Am.Crypto
+{
+    // HMAC — a keyed message authentication code (RFC 2104), over the
+    // digests this package provides. Returns a fresh UByte[] as long as the
+    // underlying digest: 32 bytes for sha256, 20 for sha1.
+    //
+    // <h3>Why this is a primitive and not three lines in a caller</h3>
+    // HMAC looks trivial written out — pad the key, hash twice — and that
+    // is exactly why it gets reimplemented and exactly why the
+    // reimplementations are wrong. The two mistakes are always the same:
+    // forgetting that a key LONGER than the block size must be hashed down
+    // first (64 bytes for both digests here, not the 32 or 20 of the
+    // output), and comparing the result with an ordinary equality check.
+    // Neither mistake announces itself: the first works fine until somebody
+    // uses a long key, the second works correctly forever and leaks the
+    // expected value a byte at a time to anybody who can time it.
+    //
+    // So: one implementation, the platform's, plus [[Hmac.verify]] for the
+    // comparison.
+    //
+    // <h3>What it is for</h3>
+    // Authenticating a message with a shared secret — a signed cookie, a
+    // webhook signature, an API request signature — and as the building
+    // block the authentication handshakes are specified in terms of:
+    // PostgreSQL's `scram-sha-256` and MySQL 8's `caching_sha2_password`
+    // are both sequences of HMAC-SHA-256 over values derived with
+    // [[Pbkdf2]]. It is NOT password storage on its own; that is Pbkdf2's
+    // job, because HMAC is deliberately fast.
+    #implementationPlatforms "libc", "amigaos"
+    native class Hmac
+    {
+        import Am.Lang
+
+        // HMAC-SHA-256 of `message` under `key`. 32 bytes.
+        //
+        // Any key length is accepted, including empty: a short key is
+        // zero-padded and a long one is hashed down, both per RFC 2104.
+        // That is the platform's business, not the caller's.
+        static native fun sha256(key: UByte[], message: UByte[]): UByte[]
+
+        // HMAC-SHA-1 of `message` under `key`. 20 bytes.
+        //
+        // Still fine — HMAC does not need collision resistance from its
+        // digest, so SHA-1 being broken for collisions does not break
+        // HMAC-SHA-1 — and required by a long tail of protocols (AWS
+        // Signature V2, OAuth 1.0a, older TOTP). Prefer sha256 for
+        // anything new.
+        static native fun sha1(key: UByte[], message: UByte[]): UByte[]
+
+        /**
+         * Do two byte strings match, in time that does not depend on WHERE
+         * they first differ?
+         *
+         * Use this for every comparison of a MAC, a token, a signature or
+         * a derived key, and never `==` or a loop that returns early. An
+         * ordinary comparison stops at the first differing byte, so how
+         * long it takes reveals how much of the expected value the caller
+         * got right — which is enough to recover the whole value one byte
+         * at a time, without ever having guessed it.
+         *
+         * Lengths are compared first and a mismatch returns false
+         * immediately. That is not a leak: the length of a MAC is fixed by
+         * the algorithm and public.
+         */
+        static fun verify(expected: UByte[], actual: UByte[]): Bool {
+            if (expected.length() != actual.length()) {
+                return false
+            }
+            return Hmac.constantTimeEquals(expected, actual)
+        }
+
+        private static native fun constantTimeEquals(a: UByte[], b: UByte[]): Bool
+    }
+}

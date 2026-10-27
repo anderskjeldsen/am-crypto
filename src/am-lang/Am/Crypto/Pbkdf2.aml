@@ -1,0 +1,94 @@
+namespace Am.Crypto
+{
+    // PBKDF2 — password-based key derivation (RFC 8018), HMAC-SHA-256 or
+    // HMAC-SHA-1 as the underlying function. Returns a fresh UByte[] of
+    // exactly the requested length.
+    //
+    // <h3>What it is for</h3>
+    // Turning something a human chose into bytes a machine can use, slowly
+    // on purpose. Two uses:
+    //
+    //   - Storing a password. Keep the salt and the derived key; on a later
+    //     login derive again and compare with [[Hmac.verify]]. Never store
+    //     a bare digest of a password: SHA-256 of a password is a lookup in
+    //     somebody's table, not a secret.
+    //   - Authentication handshakes that specify it. PostgreSQL's
+    //     `scram-sha-256` derives its salted password exactly this way, and
+    //     the server hands the client the salt and iteration count to use,
+    //     so the client has no choices to make.
+    //
+    // <h3>The iteration count is a cost, and this package runs on a 68030</h3>
+    // PBKDF2's whole value is being expensive: an attacker with a stolen
+    // table pays the same per guess the server pays per login. The usual
+    // advice — hundreds of thousands of iterations — is written for modern
+    // hardware, and on the Amiga targets this library also builds for, that
+    // is not a tuning choice but minutes of a frozen machine per login.
+    //
+    // So there is no default here on purpose. Pick the count from the
+    // machine that will run it, measure it, and know which side of the
+    // trade you are on: a server on a 68k that can afford 10,000 iterations
+    // is weaker against an attacker with a PC than one that can afford
+    // 600,000, and pretending otherwise by choosing a number from a blog
+    // post helps nobody. When a protocol dictates the count, use the
+    // protocol's.
+    //
+    // For libc-derived platforms the impl uses OpenSSL's
+    // PKCS5_PBKDF2_HMAC; amigaos uses AmiSSL's.
+    #implementationPlatforms "libc", "amigaos"
+    native class Pbkdf2
+    {
+        import Am.Lang
+
+        // The largest derived key this will produce. Not a limit of the
+        // algorithm — PBKDF2 will stretch to gigabytes — but a limit on
+        // what a plausible caller wants, so that a length that came from
+        // bad arithmetic fails loudly instead of allocating.
+        static const MAX_LENGTH: Int = 1024
+
+        /**
+         * Derive `length` bytes from `password` and `salt` using
+         * HMAC-SHA-256, with `iterations` rounds.
+         *
+         * Both inputs are byte arrays rather than strings: a password's
+         * bytes are whatever encoding the protocol says they are, usually
+         * UTF-8 but not always, and a salt is not text at all. Encoding it
+         * is the caller's decision because getting it wrong produces a
+         * key that is perfectly valid and simply does not match the one
+         * the other side derived.
+         */
+        static fun hmacSha256(password: UByte[], salt: UByte[], iterations: Int, length: Int): UByte[] {
+            Pbkdf2.check(iterations, length)
+            return Pbkdf2.deriveSha256(password, salt, iterations, length)
+        }
+
+        /**
+         * The same, using HMAC-SHA-1.
+         *
+         * Here for the protocols that specify it — WPA2's PSK, older
+         * .NET and Django password hashes, PostgreSQL's `scram-sha-1`
+         * ancestors. Prefer hmacSha256 whenever the choice is yours.
+         */
+        static fun hmacSha1(password: UByte[], salt: UByte[], iterations: Int, length: Int): UByte[] {
+            Pbkdf2.check(iterations, length)
+            return Pbkdf2.deriveSha1(password, salt, iterations, length)
+        }
+
+        // Rejected before reaching the native side, where a zero iteration
+        // count is undefined behaviour in the spec and a negative length
+        // would be read as an enormous unsigned one.
+        private static fun check(iterations: Int, length: Int) {
+            if (iterations < 1) {
+                throw new Exception("Pbkdf2: iterations must be at least 1, got " + iterations.toString())
+            }
+            if (length < 1) {
+                throw new Exception("Pbkdf2: length must be at least 1, got " + length.toString())
+            }
+            if (length > Pbkdf2.MAX_LENGTH) {
+                throw new Exception("Pbkdf2: length " + length.toString() + " exceeds the maximum of " + Pbkdf2.MAX_LENGTH.toString())
+            }
+        }
+
+        private static native fun deriveSha256(password: UByte[], salt: UByte[], iterations: Int, length: Int): UByte[]
+        private static native fun deriveSha1(password: UByte[], salt: UByte[], iterations: Int, length: Int): UByte[]
+    }
+}

@@ -1,0 +1,231 @@
+namespace Am.Crypto.Tests {
+
+    // Tests for `Am.Crypto.Sha256`. The expected digests are the published
+    // NIST / FIPS 180-4 vectors — if the native OpenSSL/AmiSSL binding
+    // regresses, these go red immediately.
+    //
+    // Same shape as Sha1Test and Md5Test, including the inline hex encoder:
+    // digests are compared as lower-case hex strings because AmLang's
+    // Assert.assertEquals does not deep-compare primitive arrays, and the
+    // encoder stays in the test so it is not part of the library's surface.
+    class Sha256Test {
+        import Am.Lang
+        import Am.Crypto
+        import Am.Tests
+
+        // ---- published vectors ------------------------------------------
+
+        test digestOfEmptyString() {
+            Assert.assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                Sha256Test.hashHex(""))
+        }
+
+        test digestOfSingleByte() {
+            var hex: String = Sha256Test.hashHex("a")
+            Assert.assertEquals("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb", hex)
+            Assert.assertTrue(hex.length() == 64)
+        }
+
+        // The FIPS 180-4 one-block example.
+        test digestOfAbc() {
+            Assert.assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Sha256Test.hashHex("abc"))
+        }
+
+        // The FIPS 180-4 two-block example — 56 bytes, so the message plus
+        // its 9 bytes of mandatory padding no longer fit in one 64-byte
+        // block and the length lands in a second. The case a hand-written
+        // SHA-256 gets wrong.
+        test digestOfTheTwoBlockVector() {
+            Assert.assertEquals("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+                Sha256Test.hashHex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+        }
+
+        test digestOfMessageDigest() {
+            Assert.assertEquals("f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650",
+                Sha256Test.hashHex("message digest"))
+        }
+
+        test digestOfTheAlphabet() {
+            Assert.assertEquals("71c480df93d6ae2f1efad1447c66c9525e316218cf51fc8d9ed832f2daf18b73",
+                Sha256Test.hashHex("abcdefghijklmnopqrstuvwxyz"))
+        }
+
+        test digestOfTheAlphanumericRun() {
+            Assert.assertEquals("db4bfcbd4da0cd85a60c3c37d3fbd8805c77f15fc6b1fdfe614ee0a7c8fdb4c0",
+                Sha256Test.hashHex("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    + "abcdefghijklmnopqrstuvwxyz0123456789"))
+        }
+
+        // 80 bytes — spans two blocks with room to spare.
+        test digestOfTheDigitRun() {
+            Assert.assertEquals("f371bc4a311f2b009eef952dd83ca80e2b60026c8e935592d0f9c308453c813e",
+                Sha256Test.hashHex("1234567890123456789012345678901234567890"
+                    + "1234567890123456789012345678901234567890"))
+        }
+
+        // ---- shape and behaviour ----------------------------------------
+
+        // Always 32 bytes (256 bits) — the one thing a caller moving here
+        // from Sha1 or Md5 has to notice, because a buffer sized for the
+        // old digest truncates this one silently.
+        test digestLengthIsAlways32Bytes() {
+            var d1: UByte[] = Sha256.digest("".toBytes("UTF-8"))
+            var d2: UByte[] = Sha256.digest("hello".toBytes("UTF-8"))
+            var d3: UByte[] = Sha256.digest("a much longer input string than the others here".toBytes("UTF-8"))
+            Assert.assertTrue(d1.length() == 32UI)
+            Assert.assertTrue(d2.length() == 32UI)
+            Assert.assertTrue(d3.length() == 32UI)
+        }
+
+        // Catches state leakage in the native binding — a forgotten init
+        // would show up as the second call differing from the first.
+        test digestIsDeterministic() {
+            Assert.assertEquals(Sha256Test.hashHex("AmLang"), Sha256Test.hashHex("AmLang"))
+            Assert.assertEquals("b78984c11f3e81639bb40353f96e62c3087a388aa85ee2591325ce3b06771507",
+                Sha256Test.hashHex("AmLang"))
+        }
+
+        test digestChangesWithInput() {
+            Assert.assertTrue(Sha256Test.hashHex("abc") != Sha256Test.hashHex("abd"))
+        }
+
+        // The three digests must not be wired to the same native function.
+        // A copy-paste in the binding would be invisible to every test
+        // above, because each digest would still be self-consistent — and
+        // the lengths differ, so this also catches a binding that returns
+        // the right bytes from the wrong algorithm.
+        test sha256IsNotSha1OrMd5() {
+            var sha256 = Sha256Test.hashHex("abc")
+            Assert.assertTrue(sha256 != Sha256Test.toHex(Sha1.digest("abc".toBytes("UTF-8"))))
+            Assert.assertTrue(sha256 != Sha256Test.toHex(Md5.digest("abc".toBytes("UTF-8"))))
+        }
+
+        // ---- streaming interface ----------------------------------------
+
+        test streamingMatchesOneShot() {
+            var h = new Sha256()
+            h.update("message ".toBytes("UTF-8"))
+            h.update("digest".toBytes("UTF-8"))
+            Assert.assertEquals("f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        // Updates that do not fall on a block boundary: 56 bytes fed in
+        // three uneven pieces must still produce the two-block digest,
+        // which is where a buffering bug in the native side would show.
+        test streamingAcrossABlockBoundary() {
+            var h = new Sha256()
+            h.update("abcdbcdecdefdefg".toBytes("UTF-8"))
+            h.update("efghfghighijhijkijkl".toBytes("UTF-8"))
+            h.update("jklmklmnlmnomnopnopq".toBytes("UTF-8"))
+            Assert.assertEquals("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        test updateRangeHashesSlice() {
+            var padded = "xxabcyy".toBytes("UTF-8")
+            var h = new Sha256()
+            h.updateRange(padded, 2UI, 3UI)   // just "abc"
+            Assert.assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        test emptyStreamMatchesEmptyDigest() {
+            var h = new Sha256()
+            Assert.assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        test zeroLengthUpdateIsNoOp() {
+            var h = new Sha256()
+            h.update(new UByte[0UI])
+            h.update("abc".toBytes("UTF-8"))
+            h.updateRange("abc".toBytes("UTF-8"), 1UI, 0UI)
+            Assert.assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        test useAfterFinishThrows() {
+            var h = new Sha256()
+            h.update("abc".toBytes("UTF-8"))
+            h.finish()
+            var caught = false
+            try {
+                h.update("more".toBytes("UTF-8"))
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+            caught = false
+            try {
+                h.finish()
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+        }
+
+        test updateRangeOutOfRangeThrows() {
+            var h = new Sha256()
+            var caught = false
+            try {
+                h.updateRange("abc".toBytes("UTF-8"), 2UI, 5UI)
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+            // And the stream is still usable afterwards: the range check
+            // happens in AmLang, before the native side is touched.
+            h.update("abc".toBytes("UTF-8"))
+            Assert.assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Sha256Test.toHex(h.finish()))
+        }
+
+        // Two hashers alive at once must not share state — the stream
+        // context lives in the instance, and a static one would make this
+        // the test that notices.
+        test twoHashersAreIndependent() {
+            var a = new Sha256()
+            var b = new Sha256()
+            a.update("abc".toBytes("UTF-8"))
+            b.update("message ".toBytes("UTF-8"))
+            b.update("digest".toBytes("UTF-8"))
+            Assert.assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Sha256Test.toHex(a.finish()))
+            Assert.assertEquals("f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650",
+                Sha256Test.toHex(b.finish()))
+        }
+
+        // ---- helpers ----------------------------------------------------
+
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + Sha256Test.nibble(hi) + Sha256Test.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun hashHex(input: String): String {
+            return Sha256Test.toHex(Sha256.digest(input.toBytes("UTF-8")))
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) {
+                return n.toString()
+            }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+}

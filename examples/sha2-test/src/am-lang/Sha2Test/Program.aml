@@ -1,0 +1,281 @@
+namespace Sha2Test {
+
+    /**
+     * SHA-256 / HMAC / PBKDF2 against the published vectors, on m68k.
+     *
+     * This exists because a clean amigaos build proves almost nothing
+     * about these three. They reach AmiSSL through `-lamisslstubs`, and a
+     * stub resolves at LINK time whether or not the amissl.library on the
+     * machine implements the call behind it — so `HMAC` and
+     * `PKCS5_PBKDF2_HMAC` linking is not evidence that they work. The only
+     * way to find out is to run them and compare.
+     *
+     * The second thing it settles is byte order. Every expected value here
+     * was produced on a little-endian host; m68k is big-endian, and a
+     * digest implementation that mixed up word order would still be
+     * self-consistent — every "is it deterministic" test would pass and
+     * every value would be wrong. Comparing against fixed hex is what
+     * catches that.
+     *
+     * Output: one line per check, then a RESULT line the harness greps.
+     * Run it with ./run-m68k.sh.
+     */
+    class Program {
+        import Am.Lang
+        import Am.Crypto
+
+        static var passed: Int = 0
+        static var failed: Int = 0
+
+        static fun main() {
+            "=== am-crypto SHA-2 family on m68k ===".println()
+
+            // A preamble that calls each primitive once, with a marker
+            // before and after. On a host where one of them is missing from
+            // the AmiSSL stub set the program stops between two markers,
+            // which names the primitive — a stub resolves at link time, so
+            // the build said nothing.
+            "".println()
+            "--- reachability ---".println()
+            "  calling Sha1.digest".println()
+            Sha1.digest("abc".toBytes("UTF-8"))
+            "  Sha1 returned".println()
+            "  calling Md5.digest".println()
+            Md5.digest("abc".toBytes("UTF-8"))
+            "  Md5 returned".println()
+            "  calling Sha256.digest".println()
+            Sha256.digest("abc".toBytes("UTF-8"))
+            "  Sha256 returned".println()
+            "  calling Hmac.sha256".println()
+            Hmac.sha256("k".toBytes("UTF-8"), "m".toBytes("UTF-8"))
+            "  Hmac returned".println()
+            "  calling Pbkdf2.hmacSha256 (1 iteration)".println()
+            Pbkdf2.hmacSha256("p".toBytes("UTF-8"), "s".toBytes("UTF-8"), 1, 32)
+            "  Pbkdf2 returned".println()
+
+            "".println()
+            "--- Sha256.digest, FIPS 180-4 ---".println()
+            Program.check("sha256(\"abc\")",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                Program.toHex(Sha256.digest("abc".toBytes("UTF-8"))))
+            Program.check("sha256(\"\")",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                Program.toHex(Sha256.digest("".toBytes("UTF-8"))))
+            // 56 bytes: the message plus its mandatory padding no longer
+            // fits one block, so the length lands in a second.
+            Program.check("sha256(two-block vector)",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+                Program.toHex(Sha256.digest(
+                    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".toBytes("UTF-8"))))
+
+            "".println()
+            "--- Sha256 streaming ---".println()
+            var h = new Sha256()
+            h.update("abcdbcdecdefdefg".toBytes("UTF-8"))
+            h.update("efghfghighijhijkijkl".toBytes("UTF-8"))
+            h.update("jklmklmnlmnomnopnopq".toBytes("UTF-8"))
+            Program.check("streamed in 3 uneven pieces",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+                Program.toHex(h.finish()))
+
+            "".println()
+            "--- Hmac, RFC 4231 / RFC 2202 ---".println()
+            Program.check("hmac-sha256 case 2 (short key)",
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+                Program.toHex(Hmac.sha256("Jefe".toBytes("UTF-8"),
+                    "what do ya want for nothing?".toBytes("UTF-8"))))
+            // A 131-byte key, longer than the 64-byte block, so AmiSSL has
+            // to hash it down first. The step a reimplementation skips.
+            Program.check("hmac-sha256 case 6 (131-byte key)",
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+                Program.toHex(Hmac.sha256(Program.repeated(131UI, 170UB),
+                    "Test Using Larger Than Block-Size Key - Hash Key First".toBytes("UTF-8"))))
+            Program.check("hmac-sha1 case 1",
+                "b617318655057264e28bc0b6fb378c8ef146be00",
+                Program.toHex(Hmac.sha1(Program.repeated(20UI, 11UB),
+                    "Hi There".toBytes("UTF-8"))))
+
+            "".println()
+            "--- Hmac.verify (the hand-written m68k constant-time path) ---".println()
+            var macA = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            var macB = Hmac.sha256("key".toBytes("UTF-8"), "message".toBytes("UTF-8"))
+            Program.checkBool("verify accepts a match", true, Hmac.verify(macA, macB))
+            macB[31UI] = (macB[31UI].toUInt() ^ 1UI).toUByte()
+            Program.checkBool("verify rejects a flipped last byte", false, Hmac.verify(macA, macB))
+            Program.checkBool("verify rejects a length mismatch", false,
+                Hmac.verify(macA, "short".toBytes("UTF-8")))
+
+            "".println()
+            "--- Pbkdf2, RFC 6070 and friends ---".println()
+            Program.check("pbkdf2-sha1 1 iteration",
+                "0c60c80f961f0e71f3a9b524af6012062fe037a6",
+                Program.toHex(Pbkdf2.hmacSha1("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 1, 20)))
+            "  (4096 iterations next - this is the slow one on m68k)".println()
+            Program.check("pbkdf2-sha1 4096 iterations",
+                "4b007901b765489abead49d926f721d065a429c1",
+                Program.toHex(Pbkdf2.hmacSha1("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 4096, 20)))
+            Program.check("pbkdf2-sha256 4096 iterations",
+                "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a",
+                Program.toHex(Pbkdf2.hmacSha256("password".toBytes("UTF-8"),
+                    "salt".toBytes("UTF-8"), 4096, 32)))
+            // 25 bytes out of a 20-byte function: the output spans two
+            // blocks, so the second has to be asked for with a different
+            // block index.
+            Program.check("pbkdf2-sha1 25 bytes (two output blocks)",
+                "3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038",
+                Program.toHex(Pbkdf2.hmacSha1("passwordPASSWORDpassword".toBytes("UTF-8"),
+                    "saltSALTsaltSALTsaltSALTsaltSALTsalt".toBytes("UTF-8"), 4096, 25)))
+
+            "".println()
+            "--- The whole RFC 7677 SCRAM-SHA-256 exchange ---".println()
+            Program.scram()
+
+            "".println()
+            ("RESULT: " + Program.passed.toString() + " passed, "
+                + Program.failed.toString() + " failed").println()
+            if (Program.failed == 0) {
+                "RESULT: ALL VECTORS MATCH".println()
+            } else {
+                "RESULT: FAILURES PRESENT".println()
+            }
+        }
+
+        /**
+         * All three primitives wired together, which is the only check
+         * here that would notice them being individually right and
+         * connected wrong.
+         *
+         *     SaltedPassword  = PBKDF2(password, salt, i, 32)
+         *     ClientKey       = HMAC(SaltedPassword, "Client Key")
+         *     StoredKey       = SHA256(ClientKey)
+         *     ClientSignature = HMAC(StoredKey, AuthMessage)
+         *     ClientProof     = ClientKey XOR ClientSignature
+         *     ServerSignature = HMAC(HMAC(SaltedPassword, "Server Key"), AuthMessage)
+         *
+         * The expected proof and signature are the RFC's own `p=` and
+         * `v=` fields, in hex rather than its base64.
+         */
+        static fun scram() {
+            var password = "pencil".toBytes("UTF-8")
+            // s=W22ZaJ0SNY7soEsUEjb6gQ== as 16 raw bytes.
+            var salt = Program.fromHex("5b6d99689d12358eeca04b141236fa81")
+
+            var saltedPassword = Pbkdf2.hmacSha256(password, salt, 4096, 32)
+            Program.check("scram saltedPassword",
+                "c4a49510323ab4f952cac1fa99441939e78ea74d6be81ddf7096e87513dc615d",
+                Program.toHex(saltedPassword))
+
+            var clientKey = Hmac.sha256(saltedPassword, "Client Key".toBytes("UTF-8"))
+            var storedKey = Sha256.digest(clientKey)
+            Program.check("scram storedKey",
+                "586e5df283e6dceb5c3e791d8b8528ec191e664045ce971792e2e6b5bb13e2a6",
+                Program.toHex(storedKey))
+
+            var authMessage = ("n=user,r=rOprNGfwEbeRWgbNEkqO"
+                + ",r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF" + "$" + "k0"
+                + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
+                + ",c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF" + "$" + "k0").toBytes("UTF-8")
+            var clientSignature = Hmac.sha256(storedKey, authMessage)
+
+            var proof = new UByte[32UI]
+            var i: UInt = 0UI
+            while (i < 32UI) {
+                proof[i] = (clientKey[i].toUInt() ^ clientSignature[i].toUInt()).toUByte()
+                i = i + 1UI
+            }
+            Program.check("scram clientProof",
+                "747cdb65aa56224e2352137e52d7bdcad6a0f738df30782caa69a2cfb0277554",
+                Program.toHex(proof))
+
+            var serverKey = Hmac.sha256(saltedPassword, "Server Key".toBytes("UTF-8"))
+            Program.check("scram serverSignature",
+                "eabae24d1062db75a9451ff0b6ea7e98c8546549ff741e672d3251b2397de46e",
+                Program.toHex(Hmac.sha256(serverKey, authMessage)))
+        }
+
+        // ---- checking ----------------------------------------------------
+
+        static fun check(name: String, expected: String, actual: String) {
+            if (expected == actual) {
+                Program.passed = Program.passed + 1
+                ("  PASS  " + name).println()
+            } else {
+                Program.failed = Program.failed + 1
+                ("  FAIL  " + name).println()
+                ("        expected " + expected).println()
+                ("        got      " + actual).println()
+            }
+        }
+
+        static fun checkBool(name: String, expected: Bool, actual: Bool) {
+            if (expected == actual) {
+                Program.passed = Program.passed + 1
+                ("  PASS  " + name).println()
+            } else {
+                Program.failed = Program.failed + 1
+                ("  FAIL  " + name + " (expected " + expected.toString()
+                    + ", got " + actual.toString() + ")").println()
+            }
+        }
+
+        // ---- helpers -----------------------------------------------------
+
+        static fun repeated(count: UInt, value: UByte): UByte[] {
+            var out = new UByte[count]
+            var i: UInt = 0UI
+            while (i < count) {
+                out[i] = value
+                i = i + 1UI
+            }
+            return out
+        }
+
+        static fun fromHex(hex: String): UByte[] {
+            var count = hex.length() / 2
+            var out = new UByte[count.toUInt()]
+            var i: Int = 0
+            while (i < count) {
+                var hi = Program.digit(hex.substring((i * 2).toUInt(), 1UI))
+                var lo = Program.digit(hex.substring((i * 2 + 1).toUInt(), 1UI))
+                out[i.toUInt()] = ((hi * 16 + lo).toUInt()).toUByte()
+                i = i + 1
+            }
+            return out
+        }
+
+        static fun digit(c: String): Int {
+            var digits = "0123456789abcdef"
+            var i: Int = 0
+            while (i < 16) {
+                if (digits.substring(i.toUInt(), 1UI) == c) { return i }
+                i = i + 1
+            }
+            throw new Exception("not a hex digit: " + c)
+        }
+
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + Program.nibble(hi) + Program.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) { return n.toString() }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+}

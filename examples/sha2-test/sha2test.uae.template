@@ -1,0 +1,47 @@
+use_gui=no
+config_description=Sha2Test headless (Amiberry)
+config_hardware=true
+config_host=true
+
+# AGA + 68040 to match cli-search's working setup. 68040 has an
+# on-die FPU which the AmigaOS math IEEE stub libraries detect; with
+# 68020+68881 those stubs refuse to load on amiberry. AmiSSL picks
+# amissl_v362.library from the 68020-40 directory based on the CPU.
+chipset=aga
+chipset_compatible=A1200
+chipmem_size=4
+fastmem_size=8
+z3mem_size=64
+
+cpu_type=68040
+cpu_24bit_addressing=false
+cpu_compatible=false
+cpu_cycle_exact=false
+cpu_memory_cycle_exact=false
+mmu_model=0
+finegrain_cpu_speed=-1
+
+fpu_model=68040
+fpu_no_unimplemented=false
+fpu_strict=false
+
+nr_floppies=0
+floppy_speed=0
+sound_output=none
+sound_volume=0
+sound_volume_cd=0
+gfx_framerate=100
+
+# bsdsocket_emu must be ON even for a crypto-only test: amisslauto's
+# constructor unconditionally OpenLibrary's bsdsocket.library v4 (see
+# AmiSsl/src/autoinit_amissl_main.c) and fatal_error's if it can't be
+# found. We don't actually issue any network calls — the digest and
+# derivation paths just need amisslauto's startup to complete so AmiSSL
+# is brought up.
+bsdsocket_emu=true
+
+kickstart_rom_file=__ROM__
+filesystem2=rw,DH0:SYS:/amiga-sys,6
+filesystem2=rw,DH1:DH1:__APP_DIR__,5
+uaehf0=dir,rw,DH0:SYS:/amiga-sys,6
+uaehf1=dir,rw,DH1:DH1:__APP_DIR__,5
