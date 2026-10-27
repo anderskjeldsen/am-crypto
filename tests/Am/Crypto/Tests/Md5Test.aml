@@ -1,0 +1,227 @@
+namespace Am.Crypto.Tests {
+
+    // Tests for `Am.Crypto.Md5`. The expected digests are the canonical
+    // RFC 1321 Appendix A.5 test vectors — if the native OpenSSL/AmiSSL
+    // binding regresses, these go red immediately.
+    //
+    // Same shape as Sha1Test, including the inline hex encoder: digests are
+    // compared as lower-case hex strings because AmLang's
+    // Assert.assertEquals does not deep-compare primitive arrays, and the
+    // encoder stays in the test so it is not part of the library's surface.
+    class Md5Test {
+        import Am.Lang
+        import Am.Crypto
+        import Am.Tests
+
+        // ---- RFC 1321 Appendix A.5 -------------------------------------
+
+        test digestOfEmptyString() {
+            Assert.assertEquals("d41d8cd98f00b204e9800998ecf8427e", Md5Test.hashHex(""))
+        }
+
+        test digestOfSingleByte() {
+            var hex: String = Md5Test.hashHex("a")
+            Assert.assertEquals("0cc175b9c0f1b6a831c399e269772661", hex)
+            Assert.assertTrue(hex.length() == 32)
+        }
+
+        test digestOfAbc() {
+            Assert.assertEquals("900150983cd24fb0d6963f7d28e17f72", Md5Test.hashHex("abc"))
+        }
+
+        test digestOfMessageDigest() {
+            Assert.assertEquals("f96b697d7cb7938d525a2f31aaf161d0",
+                Md5Test.hashHex("message digest"))
+        }
+
+        test digestOfTheAlphabet() {
+            Assert.assertEquals("c3fcd3d76192e4007dfb496cca67e13b",
+                Md5Test.hashHex("abcdefghijklmnopqrstuvwxyz"))
+        }
+
+        // The longest Appendix A.5 vector — 80 bytes, so the message spans
+        // more than one 64-byte MD5 block and the padding lands in a second.
+        test digestOfTheLongVector() {
+            Assert.assertEquals("d174ab98d277d9f5a5611c2c9f419d9f",
+                Md5Test.hashHex("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    + "abcdefghijklmnopqrstuvwxyz0123456789"))
+        }
+
+        test digestOfTheDigitRun() {
+            Assert.assertEquals("57edf4a22be3c955ac49da2e2107b67a",
+                Md5Test.hashHex("123456789012345678901234567890123456789"
+                    + "01234567890123456789012345678901234567890"))
+        }
+
+        // ---- shape and behaviour ---------------------------------------
+
+        // The digest is always 16 bytes (128 bits) — half of SHA-1's, which
+        // is the one difference a caller switching between them must see.
+        test digestLengthIsAlways16Bytes() {
+            var d1: UByte[] = Md5.digest("".toBytes("UTF-8"))
+            var d2: UByte[] = Md5.digest("hello".toBytes("UTF-8"))
+            var d3: UByte[] = Md5.digest("a much longer input string than the others here".toBytes("UTF-8"))
+            Assert.assertTrue(d1.length() == 16UI)
+            Assert.assertTrue(d2.length() == 16UI)
+            Assert.assertTrue(d3.length() == 16UI)
+        }
+
+        // Catches state leakage in the native binding — a forgotten init
+        // would show up as the second call differing from the first.
+        test digestIsDeterministic() {
+            Assert.assertEquals(Md5Test.hashHex("AmLang"), Md5Test.hashHex("AmLang"))
+        }
+
+        test digestChangesWithInput() {
+            Assert.assertTrue(Md5Test.hashHex("abc") != Md5Test.hashHex("abd"))
+        }
+
+        // MD5 and SHA-1 must not be wired to the same native function —
+        // a copy-paste in the binding would be invisible to every test
+        // above, because each digest would still be self-consistent.
+        test md5IsNotSha1() {
+            Assert.assertTrue(Md5Test.hashHex("abc") != Md5Test.sha1Hex("abc"))
+        }
+
+        // ---- streaming interface ---------------------------------------
+
+        test streamingMatchesOneShot() {
+            var h = new Md5()
+            h.update("message ".toBytes("UTF-8"))
+            h.update("digest".toBytes("UTF-8"))
+            Assert.assertEquals("f96b697d7cb7938d525a2f31aaf161d0", Md5Test.toHex(h.finish()))
+        }
+
+        test updateRangeHashesSlice() {
+            var padded = "xxabcyy".toBytes("UTF-8")
+            var h = new Md5()
+            h.updateRange(padded, 2UI, 3UI)   // just "abc"
+            Assert.assertEquals("900150983cd24fb0d6963f7d28e17f72", Md5Test.toHex(h.finish()))
+        }
+
+        test emptyStreamMatchesEmptyDigest() {
+            var h = new Md5()
+            Assert.assertEquals("d41d8cd98f00b204e9800998ecf8427e", Md5Test.toHex(h.finish()))
+        }
+
+        test zeroLengthUpdateIsNoOp() {
+            var h = new Md5()
+            h.update(new UByte[0UI])
+            h.update("abc".toBytes("UTF-8"))
+            h.updateRange("abc".toBytes("UTF-8"), 1UI, 0UI)
+            Assert.assertEquals("900150983cd24fb0d6963f7d28e17f72", Md5Test.toHex(h.finish()))
+        }
+
+        test useAfterFinishThrows() {
+            var h = new Md5()
+            h.update("abc".toBytes("UTF-8"))
+            h.finish()
+            var caught = false
+            try {
+                h.update("more".toBytes("UTF-8"))
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+            caught = false
+            try {
+                h.finish()
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+        }
+
+        test updateRangeOutOfRangeThrows() {
+            var h = new Md5()
+            var caught = false
+            try {
+                h.updateRange("abc".toBytes("UTF-8"), 2UI, 5UI)
+            } catch (ex: Exception) {
+                caught = true
+            }
+            Assert.assertTrue(caught)
+            // And the stream is still usable afterwards: the range check
+            // happens in AmLang, before the native side is touched.
+            h.update("abc".toBytes("UTF-8"))
+            Assert.assertEquals("900150983cd24fb0d6963f7d28e17f72", Md5Test.toHex(h.finish()))
+        }
+
+        // ---- the PostgreSQL `md5` authentication shape ------------------
+
+        /**
+         * What PostgreSQL's md5 auth actually computes.
+         *
+         *     "md5" + hex( md5( hex( md5(password + username) ) + salt ) )
+         *
+         * Two nested digests, the inner one hex-encoded before being fed to
+         * the outer, and a 4-byte salt that is raw bytes rather than text.
+         * It is in this test file rather than only in a plugin because the
+         * nesting is the part everyone gets wrong once, and a digest that is
+         * wrong by one layer looks exactly like a wrong password.
+         */
+        test postgresMd5AuthShape() {
+            // password "secret", user "postgres"
+            var inner = Md5Test.toHex(Md5.digest("secretpostgres".toBytes("UTF-8")))
+            Assert.assertEquals("53f48b7c4b76a86ce72276c5755f217d", inner)
+
+            // Copied with a loop rather than Array.copyTo: this package
+            // builds against its PINNED am-lang-core under dependencies/,
+            // which predates copyTo, so the convenience is not available
+            // here even though the workspace core has it.
+            var innerBytes = inner.toBytes("UTF-8")
+            var salted = new UByte[innerBytes.length() + 4UI]
+            var i: UInt = 0UI
+            while (i < innerBytes.length()) {
+                salted[i] = innerBytes[i]
+                i = i + 1UI
+            }
+            // A salt of four raw bytes, not a string — 0x01 0x02 0x03 0x04.
+            salted[i] = 1UB
+            salted[i + 1UI] = 2UB
+            salted[i + 2UI] = 3UB
+            salted[i + 3UI] = 4UB
+
+            // The whole value, not just its shape: an expected digest
+            // computed elsewhere is what makes this test able to catch a
+            // nesting error, which is the mistake this auth method invites.
+            Assert.assertEquals("md5bb41a296aab6baccb36ff243a562abff",
+                "md5" + Md5Test.toHex(Md5.digest(salted)))
+        }
+
+        // ---- helpers ----------------------------------------------------
+
+        static fun toHex(digest: UByte[]): String {
+            var hex: String = ""
+            var i: UInt = 0UI
+            while (i < digest.length()) {
+                var b: UByte = digest[i]
+                var hi: UInt = (b.toUInt() >> 4UI) & 0xFUI
+                var lo: UInt = b.toUInt() & 0xFUI
+                hex = hex + Md5Test.nibble(hi) + Md5Test.nibble(lo)
+                i = i + 1UI
+            }
+            return hex
+        }
+
+        static fun hashHex(input: String): String {
+            return Md5Test.toHex(Md5.digest(input.toBytes("UTF-8")))
+        }
+
+        static fun sha1Hex(input: String): String {
+            return Md5Test.toHex(Sha1.digest(input.toBytes("UTF-8")))
+        }
+
+        static fun nibble(n: UInt): String {
+            if (n < 10UI) {
+                return n.toString()
+            }
+            if (n == 10UI) { return "a" }
+            if (n == 11UI) { return "b" }
+            if (n == 12UI) { return "c" }
+            if (n == 13UI) { return "d" }
+            if (n == 14UI) { return "e" }
+            return "f"
+        }
+    }
+}

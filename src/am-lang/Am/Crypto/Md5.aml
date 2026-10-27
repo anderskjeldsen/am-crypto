@@ -1,0 +1,70 @@
+namespace Am.Crypto
+{
+    // MD5 hash primitive — wraps the system OpenSSL `MD5` (or AmiSSL on
+    // amigaos). Returns a fresh 16-byte UByte[] digest.
+    //
+    // MD5 is thoroughly broken: collisions are cheap, and it must not be
+    // used for signatures, integrity against an adversary, or password
+    // storage. It is here because wire protocols specify it and a client
+    // that wants to connect has no say in the matter — PostgreSQL's `md5`
+    // authentication method is the reason this was added, and HTTP digest
+    // auth and a long tail of older protocols are the same story.
+    //
+    // Put differently: this exists so that each caller needing MD5 for a
+    // protocol does not implement MD5 again. A hand-written MD5 in a plugin
+    // or a script is both slower and a place to be subtly wrong, and being
+    // subtly wrong about a digest reads as "the password is rejected".
+    //
+    // For libc-derived platforms (linux, macos, morphos-ppc, etc.) the impl
+    // lives in `src/native-c/libc/` and uses the system OpenSSL libcrypto
+    // via `-lcrypto`. AmigaOS m68k has its own file under
+    // `src/native-c/amigaos/` that uses AmiSSL, sharing the library
+    // bring-up in am_crypto_amissl_init.c with Sha1 — see [[Sha1]] for why
+    // that bring-up is one shared set of globals rather than per-class.
+    #implementationPlatforms "libc", "amigaos"
+    native class Md5
+    {
+        import Am.Lang
+
+        static native fun digest(input: UByte[]): UByte[]
+
+        // ---- streaming interface --------------------------------------
+        // Hash data in pieces without assembling one contiguous buffer:
+        //
+        //   var h = new Md5()
+        //   h.update(first)
+        //   h.update(second)
+        //   var sum = h.finish()      // 16 bytes; h is spent afterwards
+        //
+        // Produces exactly the same digest as Md5.digest over the
+        // concatenation of every update. The shape mirrors Sha1's, which
+        // exists because am-git's object hasher would otherwise copy
+        // header+content into a fresh array per object just to hash it.
+        //
+        // A hasher is single-use: update or finish after finish() throws.
+
+        fun update(input: UByte[]) {
+            this.updateRange(input, 0UI, input.length())
+        }
+
+        // Hash `length` bytes of `input` starting at `offset` — saves the
+        // subArray copy when the interesting bytes sit inside a larger
+        // buffer.
+        fun updateRange(input: UByte[], offset: UInt, length: UInt) {
+            if (length == 0UI) {
+                return
+            }
+            var len = input.length()
+            if (length > len || offset > len - length) {
+                throw new IndexOutOfBoundsException((offset + length).toInt(), len)
+            }
+            this.updateNative(input, offset, length)
+        }
+
+        private native fun updateNative(input: UByte[], offset: UInt, length: UInt)
+
+        // Finalise and return the 16-byte digest. The hasher cannot be
+        // reused afterwards.
+        native fun finish(): UByte[]
+    }
+}
